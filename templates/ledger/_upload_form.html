@@ -1,0 +1,23 @@
+<form class="upload-form" method="post" action="{% url 'ledger:upload' %}" enctype="multipart/form-data">
+  {% csrf_token %}
+  <input type="hidden" name="partner" value="{{ partner }}">
+  <label class="file-drop" for="statement-{{ partner }}">
+    <span class="upload-symbol" aria-hidden="true">⇧</span>
+    <strong>Choose {{ partner_name }}’s bank export</strong>
+    <span>CSV or XLSX · maximum 10 MB</span>
+    <input id="statement-{{ partner }}" name="statement" type="file" accept=".csv,.xlsx" required>
+  </label>
+  <div class="upload-options">
+    <label>Currency
+      <input name="currency" value="{{ currency }}" minlength="3" maxlength="3" required>
+    </label>
+    <label>Expense amounts
+      <select name="expense_direction">
+        <option value="auto">Detect automatically</option>
+        <option value="negative">Negative values</option>
+        <option value="positive">Positive values</option>
+      </select>
+    </label>
+  </div>
+  <button class="button button-secondary upload-submit" type="submit">Import statement</button>
+</form>

@@ -1,0 +1,17 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Private household expense review and settlement.">
+  <link rel="icon" href="data:,">
+  <title>{% block title %}Household Split{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'ledger/app.css' %}">
+  <script src="{% static 'ledger/app.js' %}" defer></script>
+</head>
+<body>
+  {% block content %}{% endblock %}
+</body>
+</html>

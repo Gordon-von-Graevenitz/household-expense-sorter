@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% load money %}
+
+{% block content %}
+<div class="application-shell">
+  <header class="topbar">
+    <a class="brand" href="{% url 'ledger:dashboard' %}">
+      <span class="brand-mark" aria-hidden="true">↗↙</span>
+      <span>Household Split</span>
+    </a>
+    <form class="period-picker" method="get">
+      <label class="sr-only" for="month-picker">Settlement month</label>
+      <input id="month-picker" name="month" type="month" value="{{ month_value }}">
+      {% if currencies %}
+        <label class="sr-only" for="currency-picker">Currency</label>
+        <select id="currency-picker" name="currency">
+          {% for available_currency in currencies %}
+            <option value="{{ available_currency }}" {% if available_currency == currency %}selected{% endif %}>{{ available_currency }}</option>
+          {% endfor %}
+        </select>
+      {% endif %}
+      <button class="button button-quiet" type="submit">View</button>
+    </form>
+    <div class="household-label">
+      <span class="stacked-avatars" aria-hidden="true"><span class="avatar avatar-a">A</span><span class="avatar avatar-b">B</span></span>
+      <span>{{ household.name }}</span>
+    </div>
+  </header>
+
+  <main class="main-content">
+    {% if messages %}
+      <div class="messages" aria-live="polite">
+        {% for message in messages %}<div class="message message-{{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}
+      </div>
+    {% endif %}
+
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">{{ month_label }} · Monthly settlement</p>
+        <h1>Review shared expenses</h1>
+      </div>
+      <div class="view-tabs" role="tablist" aria-label="Expense workflow">
+        <button type="button" role="tab" aria-selected="true" aria-controls="review-panel" id="review-tab" data-tab="review">Review</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="settlement-panel" id="settlement-tab" data-tab="settlement">Settlement</button>
+      </div>
+    </div>
+
+    <section id="review-panel" role="tabpanel" aria-labelledby="review-tab">
+      <div class="partner-grid">
+        {% include "ledger/_partner_panel.html" with partner="A" partner_name=household.partner_a_name transactions=partner_a_transactions batch=partner_a_batch tone="a" %}
+        {% include "ledger/_partner_panel.html" with partner="B" partner_name=household.partner_b_name transactions=partner_b_transactions batch=partner_b_batch tone="b" %}
+      </div>
+
+      <section class="calculation-bar">
+        <form class="ratio-form" method="post" action="{% url 'ledger:update_ratio' %}">
+          {% csrf_token %}
+          <input type="hidden" name="month" value="{{ month_value }}">
+          <input type="hidden" name="currency" value="{{ currency }}">
+          <label for="split-ratio"><span>Shared expense ratio</span><strong><span data-ratio-a>{{ ratio_a }}</span>% / <span data-ratio-b>{{ ratio_b }}</span>%</strong></label>
+          <div class="ratio-row">
+            <input id="split-ratio" name="partner_a_percent" type="range" min="0" max="100" step="5" value="{{ ratio_a }}">
+            <button type="submit">Save</button>
+          </div>
+        </form>
+        <div class="estimated-settlement">
+          <span>Estimated settlement</span>
+          {% if summary.amount_due %}
+            <strong>{{ household|partner_name:summary.payer }} pays {{ household|partner_name:summary.receiver }} {{ summary.amount_due|money_minor:currency }}</strong>
+          {% elif summary.total %}
+            <strong>No payment needed</strong>
+          {% else %}
+            <strong>Upload both statements</strong>
+          {% endif %}
+        </div>
+        <button class="button continue-button" type="button" data-open-settlement {% if not summary.total %}disabled{% endif %}>Review settlement →</button>
+      </section>
+    </section>
+
+    <section id="settlement-panel" role="tabpanel" aria-labelledby="settlement-tab" hidden>
+      <div class="summary-grid">
+        <article class="summary-card"><span>Shared expenses</span><strong>{{ summary.total|money_minor:currency }}</strong></article>
+        <article class="summary-card"><span>{{ household.partner_a_name }} paid</span><strong>{{ summary.paid_a|money_minor:currency }}</strong><small>Responsibility {{ summary.responsibility_a|money_minor:currency }}</small></article>
+        <article class="summary-card"><span>{{ household.partner_b_name }} paid</span><strong>{{ summary.paid_b|money_minor:currency }}</strong><small>Responsibility {{ summary.responsibility_b|money_minor:currency }}</small></article>
+      </div>
+
+      <section class="settlement-card">
+        <div class="settlement-copy">
+          <p class="eyebrow">{{ month_label }} · {{ ratio_a }} / {{ ratio_b }} split</p>
+          {% if summary.amount_due %}
+            {% if summary.outstanding_minor %}
+              <h2>{{ household|partner_name:summary.payer }} pays {{ household|partner_name:summary.receiver }} {{ summary.outstanding_minor|money_minor:currency }}</h2>
+              <p>This closes the remaining balance for all included shared expenses.</p>
+            {% else %}
+              <h2>Settlement complete</h2>
+              <p>The required payment has been recorded.</p>
+            {% endif %}
+          {% else %}
+            <h2>No payment needed</h2>
+            <p>Both partners have already covered their assigned share.</p>
+          {% endif %}
+          {% if payments %}
+            <div class="payment-history">
+              <h3>Recorded payments</h3>
+              {% for payment in payments %}
+                <div><span>{{ payment.paid_on|date:"d M Y" }}</span><strong>{{ payment.amount_minor|money_minor:currency }}</strong></div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+        <div class="payment-panel">
+          {% if summary.outstanding_minor %}
+            <form method="post" action="{% url 'ledger:record_payment' %}">
+              {% csrf_token %}
+              <input type="hidden" name="month" value="{{ month_value }}">
+              <input type="hidden" name="currency" value="{{ currency }}">
+              <label for="payment-date">Payment date</label>
+              <input id="payment-date" type="date" name="paid_on" value="{{ today|date:'Y-m-d' }}" required>
+              <label for="payment-note">Note <span>optional</span></label>
+              <input id="payment-note" name="note" maxlength="255" placeholder="Bank transfer">
+              <button class="button button-primary" type="submit">Mark {{ summary.outstanding_minor|money_minor:currency }} as paid</button>
+            </form>
+          {% else %}
+            <div class="complete-state"><span aria-hidden="true">✓</span><strong>Nothing outstanding</strong></div>
+          {% endif %}
+        </div>
+      </section>
+
+      {% if rules %}
+        <section class="rules-section">
+          <div><p class="eyebrow">Saved preferences</p><h2>Always-exclude rules</h2></div>
+          <div class="rules-list">
+            {% for rule in rules %}
+              <div class="rule-row">
+                <span><strong>{{ rule.display_value }}</strong><small>{{ rule.get_match_type_display }}</small></span>
+                <form method="post" action="{% url 'ledger:disable_rule' rule.id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="month" value="{{ month_value }}"><input type="hidden" name="currency" value="{{ currency }}">
+                  <button type="submit">Disable</button>
+                </form>
+              </div>
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+    </section>
+  </main>
+</div>
+{% endblock %}

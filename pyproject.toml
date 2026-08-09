@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "household-split"
+version = "0.1.0"
+description = "A private household transaction importer and expense settlement app."
+requires-python = ">=3.12"
+dependencies = [
+  "Django>=5.2,<5.3",
+  "defusedxml>=0.7,<1",
+  "openpyxl>=3.1,<4",
+  "pandas>=2.2,<4",
+  "psycopg[binary]>=3.2,<4",
+  "waitress>=3,<4",
+  "whitenoise>=6.8,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "pytest-django>=4.11,<5",
+  "ruff>=0.12,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["config*", "ledger*"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["**/migrations/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
