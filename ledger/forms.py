@@ -7,6 +7,7 @@ from .models import Partner
 
 class UploadStatementForm(forms.Form):
     partner = forms.ChoiceField(choices=Partner.choices, widget=forms.HiddenInput)
+    replace_batch_id = forms.IntegerField(required=False, min_value=1, widget=forms.HiddenInput)
     statement = forms.FileField()
     currency = forms.CharField(min_length=3, max_length=3, initial="EUR")
     expense_direction = forms.ChoiceField(

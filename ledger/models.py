@@ -81,6 +81,7 @@ class Transaction(models.Model):
     transaction_date = models.DateField()
     description = models.CharField(max_length=255)
     normalized_description = models.CharField(max_length=255)
+    reference = models.CharField(max_length=500, blank=True)
     category = models.CharField(max_length=100, default="Uncategorised")
     amount_minor = models.PositiveBigIntegerField()
     currency = models.CharField(max_length=3)

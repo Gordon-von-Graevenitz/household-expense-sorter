@@ -3,8 +3,8 @@ from datetime import date
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from ledger.models import ExclusionRule, Household, Partner, Transaction
-from ledger.services import calculate_settlement, import_statement
+from ledger.models import ExclusionRule, Household, ImportBatch, Partner, Transaction
+from ledger.services import ImportProblem, calculate_settlement, import_statement
 
 pytestmark = pytest.mark.django_db
 
@@ -36,6 +36,85 @@ def test_negative_statement_imports_expenses_and_skips_income():
     assert item.amount_minor == 8462
     assert item.description == "REWE Markt"
     assert item.included is True
+
+
+def test_partner_export_maps_explicit_roles_and_infers_currency_from_amount_header():
+    household = Household.objects.create()
+    content = (
+        b'"Booking Date","Value Date","Partner Name","Partner Iban",Type,'
+        b'"Payment Reference","Account Name","Amount (EUR)","Original Amount",'
+        b'"Original Currency","Exchange Rate"\n'
+        b'"2026-09-05","2026-09-06","REWE Markt","DE001234",Card,'
+        b'"Weekly groceries","Main account","-84,62","","",""\n'
+    )
+    statement = SimpleUploadedFile("bank-export.csv", content, content_type="text/csv")
+
+    import_statement(
+        household=household,
+        partner=Partner.A,
+        uploaded_file=statement,
+        currency="USD",
+        expense_direction="negative",
+    )
+
+    item = Transaction.objects.get()
+    assert item.transaction_date == date(2026, 9, 5)
+    assert item.description == "REWE Markt"
+    assert item.reference == "Weekly groceries"
+    assert item.category == "Card"
+    assert item.amount_minor == 8462
+    assert item.currency == "EUR"
+
+
+def test_replacing_an_import_swaps_batches_after_the_new_file_is_valid():
+    household = Household.objects.create()
+    original = import_statement(
+        household=household,
+        partner=Partner.A,
+        uploaded_file=statement_file(),
+        currency="EUR",
+        expense_direction="negative",
+    )
+    original_id = original.batch.id
+
+    replacement = import_statement(
+        household=household,
+        partner=Partner.A,
+        uploaded_file=statement_file(),
+        currency="EUR",
+        expense_direction="negative",
+        replace_batch=original.batch,
+    )
+
+    assert ImportBatch.objects.count() == 1
+    assert not ImportBatch.objects.filter(pk=original_id).exists()
+    assert replacement.batch.id != original_id
+    assert Transaction.objects.count() == 1
+
+
+def test_invalid_replacement_preserves_the_existing_import():
+    household = Household.objects.create()
+    original = import_statement(
+        household=household,
+        partner=Partner.A,
+        uploaded_file=statement_file(),
+        currency="EUR",
+        expense_direction="negative",
+    )
+    invalid = SimpleUploadedFile("invalid.csv", b"Unknown\nvalue\n", content_type="text/csv")
+
+    with pytest.raises(ImportProblem):
+        import_statement(
+            household=household,
+            partner=Partner.A,
+            uploaded_file=invalid,
+            currency="EUR",
+            expense_direction="negative",
+            replace_batch=original.batch,
+        )
+
+    assert ImportBatch.objects.filter(pk=original.batch.id).exists()
+    assert Transaction.objects.count() == 1
 
 
 def test_saved_merchant_rule_applies_to_future_import():

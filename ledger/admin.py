@@ -19,7 +19,7 @@ class TransactionAdmin(admin.ModelAdmin):
         "included",
     )
     list_filter = ("partner", "currency", "included", "category")
-    search_fields = ("description", "normalized_description")
+    search_fields = ("description", "normalized_description", "reference")
 
 
 admin.site.register(ImportBatch)

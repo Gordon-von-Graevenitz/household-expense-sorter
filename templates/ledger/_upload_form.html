@@ -1,11 +1,12 @@
 <form class="upload-form" method="post" action="{% url 'ledger:upload' %}" enctype="multipart/form-data">
   {% csrf_token %}
   <input type="hidden" name="partner" value="{{ partner }}">
-  <label class="file-drop" for="statement-{{ partner }}">
+  {% if replace_batch_id %}<input type="hidden" name="replace_batch_id" value="{{ replace_batch_id }}">{% endif %}
+  <label class="file-drop" for="statement-{{ partner }}{% if replace_batch_id %}-replace-{{ replace_batch_id }}{% else %}-new{% endif %}">
     <span class="upload-symbol" aria-hidden="true">⇧</span>
     <strong>Choose {{ partner_name }}’s bank export</strong>
     <span>CSV or XLSX · maximum 10 MB</span>
-    <input id="statement-{{ partner }}" name="statement" type="file" accept=".csv,.xlsx" required>
+    <input id="statement-{{ partner }}{% if replace_batch_id %}-replace-{{ replace_batch_id }}{% else %}-new{% endif %}" name="statement" type="file" accept=".csv,.xlsx" required>
   </label>
   <div class="upload-options">
     <label>Currency
@@ -19,5 +20,5 @@
       </select>
     </label>
   </div>
-  <button class="button button-secondary upload-submit" type="submit">Import statement</button>
+  <button class="button button-secondary upload-submit" type="submit">{% if replace_batch_id %}Replace current import{% else %}Import statement{% endif %}</button>
 </form>

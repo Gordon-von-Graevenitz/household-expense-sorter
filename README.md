@@ -6,6 +6,7 @@ reviewing shared expenses, saving exclusion rules, and recording settlement paym
 ## Included in the first version
 
 - Separate CSV/XLSX upload panels for Partner A and Partner B
+- Safe controls to replace a validated import or clear one imported file and its transactions
 - Automatic recognition of common date, merchant, amount, category, and currency columns
 - Support for negative-amount and positive-amount bank export formats
 - Household-scoped “always exclude this merchant” rules
@@ -67,6 +68,10 @@ PostgreSQL remains the default whenever `USE_SQLITE` is not explicitly set to `1
 The importer recognises common English and German column names. At minimum, the file needs a date,
 description/merchant, and amount column. If a bank uses unusual headings, the application reports
 the headings it found; a visual column-mapping step is a sensible next enhancement.
+
+Exports containing `Booking Date`, `Partner Name`, `Payment Reference`, `Type`, and currency-bearing
+amount headers such as `Amount (EUR)` are mapped explicitly. The stable partner name is used for
+merchant exclusion rules, while the payment reference is retained as transaction detail.
 
 When automatic expense-sign detection sees negative values, it treats negative values as expenses
 and skips positive income. The upload panel lets the user override this for banks that export

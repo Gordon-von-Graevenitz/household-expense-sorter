@@ -120,6 +120,16 @@ def upload_statement_view(request: HttpRequest) -> HttpResponse:
             request, " ".join(error for errors in form.errors.values() for error in errors)
         )
         return redirect("ledger:dashboard")
+    replace_batch = None
+    replace_batch_id = form.cleaned_data.get("replace_batch_id")
+    if replace_batch_id:
+        replace_batch = household.imports.filter(
+            pk=replace_batch_id,
+            partner=form.cleaned_data["partner"],
+        ).first()
+        if replace_batch is None:
+            messages.error(request, "The import selected for replacement no longer exists.")
+            return redirect("ledger:dashboard")
     try:
         result = import_statement(
             household=household,
@@ -127,16 +137,35 @@ def upload_statement_view(request: HttpRequest) -> HttpResponse:
             uploaded_file=form.cleaned_data["statement"],
             currency=form.cleaned_data["currency"],
             expense_direction=form.cleaned_data["expense_direction"],
+            replace_batch=replace_batch,
         )
     except (DuplicateImport, ImportProblem) as exc:
         messages.error(request, str(exc))
         return redirect("ledger:dashboard")
     partner_name = household.partner_name(result.batch.partner)
-    note = f" Imported {result.imported} expenses for {partner_name}."
+    action = "Replaced the import with" if replace_batch else "Imported"
+    note = f"{action} {result.imported} expenses for {partner_name}."
     if result.skipped:
         note += f" Skipped {result.skipped} non-expense or invalid rows."
     messages.success(request, note.strip())
     return redirect(dashboard_url(result.first_date.replace(day=1), result.batch.currency))
+
+
+def delete_import(request: HttpRequest, batch_id: int) -> HttpResponse:
+    if request.method != "POST":
+        return redirect("ledger:dashboard")
+    household = get_household()
+    batch = get_object_or_404(household.imports, pk=batch_id)
+    month = parse_month(request.POST.get("month"))
+    currency = request.POST.get("currency", batch.currency).upper()
+    filename = batch.original_filename
+    deleted_transactions = batch.transactions.count()
+    batch.delete()
+    messages.success(
+        request,
+        f"Cleared {filename} and its {deleted_transactions} imported transactions.",
+    )
+    return redirect(dashboard_url(month, currency))
 
 
 def transaction_action(request: HttpRequest, transaction_id: int) -> HttpResponse:

@@ -11,19 +11,48 @@
   {% if batch %}
     <div class="file-summary">
       <span><span aria-hidden="true">▤</span> {{ batch.original_filename }}</span>
-      <small>{{ batch.currency }} · {{ transactions|length }} rows</small>
+      <small>{{ batch.currency }} · {{ batch.row_count }} rows</small>
+    </div>
+    <div class="import-toolbar">
+      <div class="copy-sheets-control">
+        <button class="copy-sheets-button" type="button" data-copy-table="partner-{{ partner }}-transactions">Copy for Google Sheets</button>
+        <span class="copy-sheets-status" role="status" aria-live="polite"></span>
+      </div>
+      <details class="replace-import">
+        <summary>Replace file</summary>
+        {% include "ledger/_upload_form.html" with replace_batch_id=batch.id %}
+      </details>
+      <form method="post" action="{% url 'ledger:delete_import' batch.id %}" data-confirm="Clear {{ batch.original_filename }} and all of its imported transactions?">
+        {% csrf_token %}
+        <input type="hidden" name="month" value="{{ month_value }}">
+        <input type="hidden" name="currency" value="{{ currency }}">
+        <button class="clear-import-button" type="submit">Clear import</button>
+      </form>
     </div>
     <div class="transaction-scroll">
-      <table class="transaction-table">
+      <table class="transaction-table" id="partner-{{ partner }}-transactions">
         <thead>
           <tr><th>Date</th><th>Merchant</th><th>Category</th><th class="number">Amount</th><th><span class="sr-only">Actions</span></th></tr>
         </thead>
         <tbody>
           {% for item in transactions %}
-            <tr {% if not item.included %}class="excluded-row"{% endif %}>
+            <tr
+              id="transaction-{{ item.id }}"
+              data-transaction-row
+              {% if item.included %}
+                data-export-row
+                data-export-date="{{ item.transaction_date|date:'d.m.Y' }}"
+                data-export-category="{{ item.category }}"
+                data-export-details="{{ item.description }}"
+                data-export-amount="{{ item.amount_minor|decimal_minor }}"
+              {% else %}
+                class="excluded-row"
+              {% endif %}
+            >
               <td class="nowrap">{{ item.transaction_date|date:"d M" }}</td>
               <td>
                 <span class="merchant">{{ item.description }}</span>
+                {% if item.reference %}<small class="transaction-reference">{{ item.reference }}</small>{% endif %}
                 {% if item.exclusion_reason %}<small class="exclusion-note">{{ item.exclusion_reason }}</small>{% endif %}
               </td>
               <td><span class="category-chip">{{ item.category }}</span></td>
@@ -32,7 +61,7 @@
                 <details class="row-actions">
                   <summary aria-label="Actions for {{ item.description }}">•••</summary>
                   <div class="action-menu">
-                    <form method="post" action="{% url 'ledger:transaction_action' item.id %}">
+                    <form method="post" action="{% url 'ledger:transaction_action' item.id %}" data-preserve-scroll>
                       {% csrf_token %}
                       {% if item.included %}
                         <button type="submit" name="action" value="exclude">Exclude this time</button>

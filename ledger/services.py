@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from enum import StrEnum
 from pathlib import Path
 
 import pandas as pd
@@ -25,12 +26,36 @@ class DuplicateImport(ImportProblem):
     pass
 
 
+class ColumnRole(StrEnum):
+    DATE = "date"
+    MERCHANT = "merchant"
+    REFERENCE = "reference"
+    AMOUNT = "amount"
+    CATEGORY = "category"
+    CURRENCY = "currency"
+
+
 @dataclass(frozen=True)
 class ImportResult:
     batch: ImportBatch
     imported: int
     skipped: int
     first_date: date
+
+
+@dataclass(frozen=True)
+class StatementColumns:
+    by_role: dict[ColumnRole, str | None]
+    amount_currency: str | None = None
+
+    def required(self, role: ColumnRole) -> str:
+        column = self.by_role[role]
+        if column is None:
+            raise RuntimeError(f"Required column role {role} was not mapped.")
+        return column
+
+    def optional(self, role: ColumnRole) -> str | None:
+        return self.by_role.get(role)
 
 
 def normalize_merchant(value: str) -> str:
@@ -41,31 +66,35 @@ def _normalize_column(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower())
 
 
-COLUMN_ALIASES = {
-    "date": {
-        "date",
-        "transactiondate",
+COLUMN_ALIASES: dict[ColumnRole, tuple[str, ...]] = {
+    ColumnRole.DATE: (
         "bookingdate",
+        "transactiondate",
+        "date",
         "bookingday",
         "valuedate",
         "datum",
         "buchungstag",
         "valuta",
-    },
-    "description": {
-        "description",
+    ),
+    ColumnRole.MERCHANT: (
+        "partnername",
         "merchant",
         "payee",
-        "details",
+        "description",
         "name",
-        "memo",
-        "reference",
-        "verwendungszweck",
         "empfaenger",
         "zahlungsempfaenger",
         "beguenstigter",
-    },
-    "amount": {
+    ),
+    ColumnRole.REFERENCE: (
+        "paymentreference",
+        "reference",
+        "verwendungszweck",
+        "memo",
+        "details",
+    ),
+    ColumnRole.AMOUNT: (
         "amount",
         "transactionamount",
         "value",
@@ -73,25 +102,36 @@ COLUMN_ALIASES = {
         "debit",
         "withdrawal",
         "umsatz",
-    },
-    "category": {"category", "transactioncategory", "kategorie", "type"},
-    "currency": {"currency", "currencycode", "waehrung", "wahrung"},
+    ),
+    ColumnRole.CATEGORY: ("category", "transactioncategory", "kategorie", "type"),
+    ColumnRole.CURRENCY: ("currency", "currencycode", "waehrung", "wahrung"),
 }
 
 
-def _find_columns(frame: pd.DataFrame) -> dict[str, str | None]:
+def _find_columns(frame: pd.DataFrame) -> StatementColumns:
     normalized = {_normalize_column(column): str(column) for column in frame.columns}
-    found: dict[str, str | None] = {}
-    for field, aliases in COLUMN_ALIASES.items():
-        found[field] = next((normalized[alias] for alias in aliases if alias in normalized), None)
-    missing = [field for field in ("date", "description", "amount") if not found[field]]
+    found: dict[ColumnRole, str | None] = {}
+    for role, aliases in COLUMN_ALIASES.items():
+        found[role] = next((normalized[alias] for alias in aliases if alias in normalized), None)
+
+    amount_currency = None
+    if found[ColumnRole.AMOUNT] is None:
+        for normalized_name, original_name in normalized.items():
+            currency_match = re.fullmatch(r"(?:amount|betrag)([a-z]{3})", normalized_name)
+            if currency_match:
+                found[ColumnRole.AMOUNT] = original_name
+                amount_currency = currency_match.group(1).upper()
+                break
+
+    required_roles = (ColumnRole.DATE, ColumnRole.MERCHANT, ColumnRole.AMOUNT)
+    missing = [role.value for role in required_roles if not found[role]]
     if missing:
         available = ", ".join(str(column) for column in frame.columns)
         missing_names = ", ".join(missing)
         raise ImportProblem(
             f"Could not identify the {missing_names} column(s). Available columns: {available}."
         )
-    return found
+    return StatementColumns(by_role=found, amount_currency=amount_currency)
 
 
 def _read_statement(filename: str, content: bytes) -> pd.DataFrame:
@@ -140,6 +180,13 @@ def _parse_amount(raw_value: object) -> Decimal:
     return -amount if negative_parentheses and amount > 0 else amount
 
 
+def _parse_transaction_date(raw_value: object) -> date:
+    value = str(raw_value).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:$|[T\s])", value):
+        return date.fromisoformat(value[:10])
+    return pd.to_datetime(value, dayfirst=True, errors="raise").date()
+
+
 def _resolve_direction(amounts: list[Decimal], requested: str) -> str:
     if requested != "auto":
         return requested
@@ -169,15 +216,28 @@ def models_q_category(category: str):
 
 
 def import_statement(
-    *, household: Household, partner: str, uploaded_file, currency: str, expense_direction: str
+    *,
+    household: Household,
+    partner: str,
+    uploaded_file,
+    currency: str,
+    expense_direction: str,
+    replace_batch: ImportBatch | None = None,
 ) -> ImportResult:
+    if replace_batch and (
+        replace_batch.household_id != household.id or replace_batch.partner != partner
+    ):
+        raise ImportProblem("The selected import cannot be replaced for this partner.")
     content = uploaded_file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise ImportProblem("The statement must be 10 MB or smaller.")
     file_hash = hashlib.sha256(content).hexdigest()
-    if ImportBatch.objects.filter(
+    duplicate_imports = ImportBatch.objects.filter(
         household=household, partner=partner, file_hash=file_hash
-    ).exists():
+    )
+    if replace_batch:
+        duplicate_imports = duplicate_imports.exclude(pk=replace_batch.pk)
+    if duplicate_imports.exists():
         raise DuplicateImport("This exact statement has already been imported for this partner.")
 
     frame = _read_statement(uploaded_file.name, content)
@@ -189,7 +249,7 @@ def import_statement(
     parsed_amounts = []
     for index, row in frame.iterrows():
         try:
-            amount = _parse_amount(row[columns["amount"]])
+            amount = _parse_amount(row[columns.required(ColumnRole.AMOUNT)])
             parsed_amounts.append(amount)
             parsed_rows.append((index, row, amount))
         except (InvalidOperation, ValueError):
@@ -206,23 +266,31 @@ def import_statement(
             skipped += 1
             continue
         try:
-            transaction_date = pd.to_datetime(
-                str(row[columns["date"]]).strip(), dayfirst=True, errors="raise"
-            ).date()
+            transaction_date = _parse_transaction_date(row[columns.required(ColumnRole.DATE)])
         except (ValueError, TypeError):
             skipped += 1
             continue
-        description = str(row[columns["description"]]).strip()
+        merchant_column = columns.required(ColumnRole.MERCHANT)
+        description = str(row[merchant_column]).strip()
         if not description:
             skipped += 1
             continue
         normalized = normalize_merchant(description)
+        reference_column = columns.optional(ColumnRole.REFERENCE)
+        reference = (
+            str(row[reference_column]).strip()
+            if reference_column and reference_column != merchant_column
+            else ""
+        )
+        category_column = columns.optional(ColumnRole.CATEGORY)
         category = (
-            str(row[columns["category"]]).strip() if columns["category"] else "Uncategorised"
+            str(row[category_column]).strip() if category_column else "Uncategorised"
         ) or "Uncategorised"
+        currency_column = columns.optional(ColumnRole.CURRENCY)
+        fallback_currency = columns.amount_currency or currency
         row_currency = (
-            str(row[columns["currency"]]).strip().upper() if columns["currency"] else currency
-        ) or currency
+            str(row[currency_column]).strip().upper() if currency_column else fallback_currency
+        ) or fallback_currency
         if len(row_currency) != 3 or not row_currency.isalpha():
             raise ImportProblem(f"Invalid currency value: {row_currency!r}.")
         detected_currencies.add(row_currency)
@@ -241,6 +309,7 @@ def import_statement(
                 "date": transaction_date,
                 "description": description[:255],
                 "normalized": normalized[:255],
+                "reference": reference[:500],
                 "category": category[:100],
                 "amount_minor": amount_minor,
                 "currency": row_currency,
@@ -257,6 +326,13 @@ def import_statement(
     batch_currency = detected_currencies.pop()
     try:
         with transaction.atomic():
+            if replace_batch:
+                batch_to_replace = ImportBatch.objects.select_for_update().get(
+                    pk=replace_batch.pk,
+                    household=household,
+                    partner=partner,
+                )
+                batch_to_replace.delete()
             batch = ImportBatch.objects.create(
                 household=household,
                 partner=partner,
@@ -275,6 +351,7 @@ def import_statement(
                         transaction_date=item["date"],
                         description=item["description"],
                         normalized_description=item["normalized"],
+                        reference=item["reference"],
                         category=item["category"],
                         amount_minor=item["amount_minor"],
                         currency=item["currency"],
