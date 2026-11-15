@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from django.contrib import messages
-from django.db.models import Sum
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -11,7 +11,40 @@ from django.utils import timezone
 
 from .forms import PaymentForm, RatioForm, UploadStatementForm
 from .models import ExclusionRule, Household, Partner, Payment, Settlement, Transaction
-from .services import DuplicateImport, ImportProblem, calculate_settlement, import_statement
+from .services import (
+    DuplicateImport,
+    ImportProblem,
+    calculate_settlement,
+    import_statement,
+    round_share,
+)
+
+
+def saved_summary(settlement: Settlement) -> dict[str, int | str]:
+    responsibility_a = round_share(settlement.total_minor, settlement.split_a_basis_points)
+    return {
+        "total": settlement.total_minor,
+        "paid_a": settlement.paid_a_minor,
+        "paid_b": settlement.paid_b_minor,
+        "responsibility_a": responsibility_a,
+        "responsibility_b": settlement.total_minor - responsibility_a,
+        "payer": settlement.payer,
+        "receiver": other_partner(settlement.payer) if settlement.payer else "",
+        "amount_due": settlement.amount_due_minor,
+    }
+
+
+def other_partner(payer: str) -> str:
+    return Partner.B if payer == Partner.A else Partner.A
+
+
+def outstanding_payment(summary, payments) -> tuple[str, int]:
+    balance = int(summary["amount_due"])
+    if summary["payer"] == Partner.B:
+        balance = -balance
+    for payment in payments:
+        balance -= payment.amount_minor if payment.payer == Partner.A else -payment.amount_minor
+    return (Partner.A if balance > 0 else Partner.B, abs(balance))
 
 
 def get_household() -> Household:
@@ -52,8 +85,10 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     month_transactions = household.transactions.filter(
         transaction_date__gte=month, transaction_date__lt=end
     )
-    currencies = list(
-        month_transactions.order_by("currency").values_list("currency", flat=True).distinct()
+    settlements = household.settlements.filter(month=month)
+    currencies = sorted(
+        set(month_transactions.values_list("currency", flat=True))
+        | set(settlements.values_list("currency", flat=True))
     )
     selected_currency = request.GET.get("currency", "").upper()
     if selected_currency not in currencies:
@@ -63,18 +98,18 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     )
     partner_a_transactions = transactions.filter(partner=Partner.A)
     partner_b_transactions = transactions.filter(partner=Partner.B)
-    summary = calculate_settlement(transactions, household.default_split_a_basis_points)
-
-    settlement = Settlement.objects.filter(
-        household=household, month=month, currency=selected_currency
-    ).first()
-    paid_minor = 0
-    payments = []
+    settlement = settlements.filter(currency=selected_currency).first()
+    payments = list(settlement.payments.all()) if settlement else []
+    split = household.default_split_a_basis_points
     if settlement:
-        payments = list(settlement.payments.all())
-        paid_minor = settlement.payments.aggregate(total=Sum("amount_minor"))["total"] or 0
-    summary["settled_minor"] = int(paid_minor)
-    summary["outstanding_minor"] = max(int(summary["amount_due"]) - int(paid_minor), 0)
+        split = settlement.split_a_basis_points
+        summary = saved_summary(settlement)
+    else:
+        summary = calculate_settlement(transactions, split)
+    payer, outstanding = outstanding_payment(summary, payments)
+    summary["outstanding_minor"] = outstanding
+    summary["outstanding_payer"] = payer
+    summary["outstanding_receiver"] = other_partner(payer)
 
     partner_batches = {}
     for partner in (Partner.A, Partner.B):
@@ -102,6 +137,9 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         "partner_b_batch": partner_batches[Partner.B],
         "summary": summary,
         "payments": payments,
+        "saved_settlement": settlement,
+        "settlement_ratio_a": split // 100,
+        "settlement_ratio_b": 100 - split // 100,
         "rules": household.rules.filter(active=True),
         "today": timezone.localdate(),
         "ratio_a": household.default_split_a_basis_points // 100,
@@ -216,10 +254,12 @@ def update_ratio(request: HttpRequest) -> HttpResponse:
     return redirect(dashboard_url(month, currency))
 
 
+@transaction.atomic
 def record_payment(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return redirect("ledger:dashboard")
     household = get_household()
+    household = Household.objects.select_for_update().get(pk=household.pk)
     month = parse_month(request.POST.get("month"))
     currency = request.POST.get("currency", "EUR").upper()
     end = next_month(month)
@@ -228,27 +268,30 @@ def record_payment(request: HttpRequest) -> HttpResponse:
         transaction_date__lt=end,
         currency=currency,
     )
-    summary = calculate_settlement(queryset, household.default_split_a_basis_points)
-    settlement, _ = Settlement.objects.update_or_create(
-        household=household,
-        month=month,
-        currency=currency,
-        defaults={
-            "split_a_basis_points": household.default_split_a_basis_points,
-            "total_minor": summary["total"],
-            "paid_a_minor": summary["paid_a"],
-            "paid_b_minor": summary["paid_b"],
-            "payer": summary["payer"],
-            "amount_due_minor": summary["amount_due"],
-        },
-    )
-    already_paid = settlement.payments.aggregate(total=Sum("amount_minor"))["total"] or 0
-    outstanding = max(int(summary["amount_due"]) - int(already_paid), 0)
+    settlement = household.settlements.filter(month=month, currency=currency).first()
+    if settlement:
+        summary = saved_summary(settlement)
+        payments = settlement.payments.all()
+    else:
+        summary = calculate_settlement(queryset, household.default_split_a_basis_points)
+        payments = []
+    payer, outstanding = outstanding_payment(summary, payments)
     form_data = request.POST.copy()
     form_data["amount_minor"] = outstanding
-    form_data["payer"] = summary["payer"]
+    form_data["payer"] = payer
     form = PaymentForm(form_data)
     if outstanding and form.is_valid():
+        if settlement is None:
+            settlement = household.settlements.create(
+                month=month,
+                currency=currency,
+                split_a_basis_points=household.default_split_a_basis_points,
+                total_minor=summary["total"],
+                paid_a_minor=summary["paid_a"],
+                paid_b_minor=summary["paid_b"],
+                payer=summary["payer"],
+                amount_due_minor=summary["amount_due"],
+            )
         Payment.objects.create(
             settlement=settlement,
             payer=form.cleaned_data["payer"],
