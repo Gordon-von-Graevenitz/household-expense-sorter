@@ -26,6 +26,23 @@ class Household(models.Model):
         return self.partner_a_name if partner == Partner.A else self.partner_b_name
 
 
+class MonthlySplit(models.Model):
+    household = models.ForeignKey(
+        Household, on_delete=models.CASCADE, related_name="monthly_splits"
+    )
+    month = models.DateField(help_text="First day of the month.")
+    split_a_basis_points = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(10000)],
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["household", "month"], name="unique_household_month_split"
+            )
+        ]
+
+
 class ExclusionRule(models.Model):
     class MatchType(models.TextChoices):
         EXACT_MERCHANT = "exact_merchant", "Exact merchant"

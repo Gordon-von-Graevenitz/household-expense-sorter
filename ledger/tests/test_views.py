@@ -167,7 +167,7 @@ def test_record_payment_closes_outstanding_settlement(client):
 
 
 def test_ratio_update_is_stored_as_basis_points(client):
-    Household.objects.create(pk=1)
+    household = Household.objects.create(pk=1)
 
     response = client.post(
         reverse("ledger:update_ratio"),
@@ -175,7 +175,11 @@ def test_ratio_update_is_stored_as_basis_points(client):
     )
 
     assert response.status_code == 302
-    assert Household.objects.get(pk=1).default_split_a_basis_points == 6000
+    assert household.monthly_splits.get().split_a_basis_points == 6000
+    july = client.get(reverse("ledger:dashboard"), {"month": "2026-07"})
+    august = client.get(reverse("ledger:dashboard"), {"month": "2026-08"})
+    assert july.context["ratio_a"] == 60
+    assert august.context["ratio_a"] == 50
 
 
 def test_recorded_settlement_survives_ratio_change_and_removed_import(client):
@@ -191,7 +195,9 @@ def test_recorded_settlement_survives_ratio_change_and_removed_import(client):
     assert response.context["summary"]["total"] == 2000
     assert response.context["summary"]["outstanding_minor"] == 0
     assert response.context["settlement_ratio_a"] == 50
-    assert response.context["ratio_a"] == 75
+    assert response.context["ratio_a"] == 50
+    assert response.context["ratio_locked"]
+    assert Household.objects.get().monthly_splits.get().split_a_basis_points == 5000
     recorded = Payment.objects.get()
     assert recorded.amount_minor == 1000
     assert recorded.payer == Partner.B

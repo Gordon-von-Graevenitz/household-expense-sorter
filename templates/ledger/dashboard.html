@@ -56,11 +56,12 @@
           {% csrf_token %}
           <input type="hidden" name="month" value="{{ month_value }}">
           <input type="hidden" name="currency" value="{{ currency }}">
-          <label for="split-ratio"><span>Default shared expense ratio</span><strong><span data-ratio-a>{{ ratio_a }}</span>% / <span data-ratio-b>{{ ratio_b }}</span>%</strong></label>
+          <label for="split-ratio"><span>{{ month_label }} split</span><strong><span data-ratio-a>{{ ratio_a }}</span>% / <span data-ratio-b>{{ ratio_b }}</span>%</strong></label>
           <div class="ratio-row">
-            <input id="split-ratio" name="partner_a_percent" type="range" min="0" max="100" step="5" value="{{ ratio_a }}">
-            <button type="submit">Save</button>
+            <input id="split-ratio" name="partner_a_percent" type="range" min="0" max="100" step="1" value="{{ ratio_a }}" {% if ratio_locked %}disabled{% endif %}>
+            <button type="submit" {% if ratio_locked %}disabled{% endif %}>Save</button>
           </div>
+          {% if ratio_locked %}<small>Split locked after settlement.</small>{% endif %}
         </form>
         <div class="estimated-settlement">
           <span>{% if saved_settlement %}Recorded settlement{% else %}Estimated settlement{% endif %}</span>
