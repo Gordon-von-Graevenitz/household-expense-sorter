@@ -56,14 +56,14 @@
           {% csrf_token %}
           <input type="hidden" name="month" value="{{ month_value }}">
           <input type="hidden" name="currency" value="{{ currency }}">
-          <label for="split-ratio"><span>Shared expense ratio</span><strong><span data-ratio-a>{{ ratio_a }}</span>% / <span data-ratio-b>{{ ratio_b }}</span>%</strong></label>
+          <label for="split-ratio"><span>Default shared expense ratio</span><strong><span data-ratio-a>{{ ratio_a }}</span>% / <span data-ratio-b>{{ ratio_b }}</span>%</strong></label>
           <div class="ratio-row">
             <input id="split-ratio" name="partner_a_percent" type="range" min="0" max="100" step="5" value="{{ ratio_a }}">
             <button type="submit">Save</button>
           </div>
         </form>
         <div class="estimated-settlement">
-          <span>Estimated settlement</span>
+          <span>{% if saved_settlement %}Recorded settlement{% else %}Estimated settlement{% endif %}</span>
           {% if summary.amount_due %}
             <strong>{{ household|partner_name:summary.payer }} pays {{ household|partner_name:summary.receiver }} {{ summary.amount_due|money_minor:currency }}</strong>
           {% elif summary.total %}
@@ -85,10 +85,13 @@
 
       <section class="settlement-card">
         <div class="settlement-copy">
-          <p class="eyebrow">{{ month_label }} · {{ ratio_a }} / {{ ratio_b }} split</p>
-          {% if summary.amount_due %}
+          <p class="eyebrow">{{ month_label }} · {{ settlement_ratio_a }} / {{ settlement_ratio_b }} split</p>
+          {% if saved_settlement %}
+            <p>This settlement uses the totals and split saved when it was recorded.</p>
+          {% endif %}
+          {% if summary.amount_due or summary.outstanding_minor %}
             {% if summary.outstanding_minor %}
-              <h2>{{ household|partner_name:summary.payer }} pays {{ household|partner_name:summary.receiver }} {{ summary.outstanding_minor|money_minor:currency }}</h2>
+              <h2>{{ household|partner_name:summary.outstanding_payer }} pays {{ household|partner_name:summary.outstanding_receiver }} {{ summary.outstanding_minor|money_minor:currency }}</h2>
               <p>This closes the remaining balance for all included shared expenses.</p>
             {% else %}
               <h2>Settlement complete</h2>

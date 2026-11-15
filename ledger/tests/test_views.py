@@ -176,3 +176,22 @@ def test_ratio_update_is_stored_as_basis_points(client):
 
     assert response.status_code == 302
     assert Household.objects.get(pk=1).default_split_a_basis_points == 6000
+
+
+def test_recorded_settlement_survives_ratio_change_and_removed_import(client):
+    upload(client, Partner.A, "july.csv", "Date,Description,Amount\n03/07/2026,Shop,-20.00\n")
+    period = {"month": "2026-07", "currency": "EUR"}
+    payment = {**period, "paid_on": "2026-08-01"}
+    client.post(reverse("ledger:record_payment"), payment)
+    client.post(reverse("ledger:update_ratio"), {**period, "partner_a_percent": 75})
+    client.post(reverse("ledger:delete_import", args=[ImportBatch.objects.get().pk]), period)
+    client.post(reverse("ledger:record_payment"), payment)
+
+    response = client.get(reverse("ledger:dashboard"), period)
+    assert response.context["summary"]["total"] == 2000
+    assert response.context["summary"]["outstanding_minor"] == 0
+    assert response.context["settlement_ratio_a"] == 50
+    assert response.context["ratio_a"] == 75
+    recorded = Payment.objects.get()
+    assert recorded.amount_minor == 1000
+    assert recorded.payer == Partner.B
