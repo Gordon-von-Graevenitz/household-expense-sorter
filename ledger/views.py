@@ -74,6 +74,13 @@ def next_month(month: date) -> date:
     return date(month.year + (month.month == 12), month.month % 12 + 1, 1)
 
 
+def monthly_split(household: Household, month: date) -> int:
+    saved_split = household.monthly_splits.filter(month=month).first()
+    if saved_split:
+        return saved_split.split_a_basis_points
+    return household.default_split_a_basis_points
+
+
 def dashboard_url(month: date, currency: str) -> str:
     return f"{reverse('ledger:dashboard')}?month={month:%Y-%m}&currency={currency}"
 
@@ -100,7 +107,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     partner_b_transactions = transactions.filter(partner=Partner.B)
     settlement = settlements.filter(currency=selected_currency).first()
     payments = list(settlement.payments.all()) if settlement else []
-    split = household.default_split_a_basis_points
+    split = monthly_split(household, month)
     if settlement:
         split = settlement.split_a_basis_points
         summary = saved_summary(settlement)
@@ -142,8 +149,9 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         "settlement_ratio_b": 100 - split // 100,
         "rules": household.rules.filter(active=True),
         "today": timezone.localdate(),
-        "ratio_a": household.default_split_a_basis_points // 100,
-        "ratio_b": 100 - household.default_split_a_basis_points // 100,
+        "ratio_a": split // 100,
+        "ratio_b": 100 - split // 100,
+        "ratio_locked": bool(settlement) or settlements.exists(),
     }
     return render(request, "ledger/dashboard.html", context)
 
@@ -238,6 +246,7 @@ def transaction_action(request: HttpRequest, transaction_id: int) -> HttpRespons
     return redirect(dashboard_url(item.transaction_date.replace(day=1), item.currency))
 
 
+@transaction.atomic
 def update_ratio(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return redirect("ledger:dashboard")
@@ -245,10 +254,15 @@ def update_ratio(request: HttpRequest) -> HttpResponse:
     form = RatioForm(request.POST)
     month = parse_month(request.POST.get("month"))
     currency = request.POST.get("currency", "EUR").upper()
-    if form.is_valid():
-        household.default_split_a_basis_points = form.cleaned_data["partner_a_percent"] * 100
-        household.save(update_fields=["default_split_a_basis_points"])
-        messages.success(request, "The household split ratio has been updated.")
+    household = Household.objects.select_for_update().get(pk=household.pk)
+    if household.settlements.filter(month=month).exists():
+        messages.error(request, "This month's split is locked because a settlement was saved.")
+    elif form.is_valid():
+        household.monthly_splits.update_or_create(
+            month=month,
+            defaults={"split_a_basis_points": form.cleaned_data["partner_a_percent"] * 100},
+        )
+        messages.success(request, "This month's split ratio has been updated.")
     else:
         messages.error(request, "Choose a split between 0% and 100%.")
     return redirect(dashboard_url(month, currency))
@@ -269,11 +283,12 @@ def record_payment(request: HttpRequest) -> HttpResponse:
         currency=currency,
     )
     settlement = household.settlements.filter(month=month, currency=currency).first()
+    split = monthly_split(household, month)
     if settlement:
         summary = saved_summary(settlement)
         payments = settlement.payments.all()
     else:
-        summary = calculate_settlement(queryset, household.default_split_a_basis_points)
+        summary = calculate_settlement(queryset, split)
         payments = []
     payer, outstanding = outstanding_payment(summary, payments)
     form_data = request.POST.copy()
@@ -282,10 +297,13 @@ def record_payment(request: HttpRequest) -> HttpResponse:
     form = PaymentForm(form_data)
     if outstanding and form.is_valid():
         if settlement is None:
+            household.monthly_splits.get_or_create(
+                month=month, defaults={"split_a_basis_points": split}
+            )
             settlement = household.settlements.create(
                 month=month,
                 currency=currency,
-                split_a_basis_points=household.default_split_a_basis_points,
+                split_a_basis_points=split,
                 total_minor=summary["total"],
                 paid_a_minor=summary["paid_a"],
                 paid_b_minor=summary["paid_b"],
